@@ -19,7 +19,7 @@ interface OriginalUserData {
 export default definePlugin({
     name: "DoubleCounterBypass",
     description: "Makes DoubleCounter think your alt account is your main account (very high ban risk - use alt accounts only!)",
-    authors: authors: [{ name: "StarFire", id: 1297220734875340840n }, { name: "MW-Lord", id: 1328096083628523523n }],
+    authors:[{ name: "StarFire", id: 1297220734875340840n }, { name: "MW-Lord", id: 1328096083628523523n }],
 
     patches: [
         {
