@@ -1,40 +1,57 @@
-import definePlugin from "@utils/types";
+/*
+ * DoubleCounterBypass - Vencord custom plugin
+ * Makes DoubleCounter think your alt is your main (high ban risk!)
+ */
+
+import definePlugin from "@utils/types";  // Note: no { OptionType } needed here
 import { FluxDispatcher } from "@webpack/common";
 import { UserStore } from "@webpack/common";
 
+interface OriginalUserData {
+    id: string;
+    username: string;
+    discriminator: string;
+    avatar: string | null;
+    globalName: string | null;
+    publicFlags: number | null;
+}
+
 export default definePlugin({
     name: "DoubleCounterBypass",
-    description: "Makes Double Counter think your alt account is your main account",
+    description: "Makes DoubleCounter think your alt account is your main account (very high ban risk - use alt accounts only!)",
     authors: [{ name: "Anonymous", id: 0n }],
-    
-    settingsAboutComponent: () => null,
-    
+
     patches: [
         {
             find: ".USER_PROFILE",
             replacement: {
                 match: /getUserProfile\((\i)\)=>{/,
-                replace: "getUserProfile($1){if($1.id===UserStore.getCurrentUser().id&&UserStore.__dcb_profile)return UserStore.__dcb_profile;"
+                replace: "getUserProfile($1){if(window.dcb_mods?.currentId===$1.id&&window.dcb_mods?.profile)return window.dcb_mods.profile;"
             }
         },
         {
             find: '"getUser"',
             replacement: {
                 match: /getUser\((\i)\)=>{/,
-                replace: "getUser($1){if($1.id===UserStore.getCurrentUser().id&&UserStore.__dcb_user)return UserStore.__dcb_user;"
+                replace: "getUser($1){if(window.dcb_mods?.currentId===$1.id&&window.dcb_mods?.user)return window.dcb_mods.user;"
             }
         }
     ],
+
+    // We'll store originals here
+    originalUserData: null as OriginalUserData | null,
+    _modifiedProfile: null as any,
+    _modifiedUser: null as any,
 
     start() {
         try {
             const currentUser = UserStore.getCurrentUser();
             if (!currentUser) {
-                console.warn("DoubleCounterBypass: No current user, skipping start");
+                console.warn("DoubleCounterBypass: No current user found, skipping");
                 return;
             }
-            
-            // Store the original user data (shallow copy select fields)
+
+            // Store original
             this.originalUserData = {
                 id: currentUser.id,
                 username: currentUser.username,
@@ -43,77 +60,76 @@ export default definePlugin({
                 globalName: currentUser.globalName,
                 publicFlags: currentUser.publicFlags
             };
-            
-            // Apply modifications
-            this.applyMainAccountModifications();
+
+            this.applyMainAccountModifications(currentUser.id);
         } catch (error) {
-            console.error("DoubleCounterBypass failed to start:", error);
+            console.error("DoubleCounterBypass start failed:", error);
         }
     },
-    
+
     stop() {
         try {
             this.restoreOriginalData();
         } catch (error) {
-            console.error("DoubleCounterBypass failed to stop:", error);
+            console.error("DoubleCounterBypass stop failed:", error);
         }
     },
-    
-    applyMainAccountModifications() {
+
+    applyMainAccountModifications(currentId: string) {
+        if (!this.originalUserData) return;
+
         const origFlags = BigInt(this.originalUserData.publicFlags || 0n);
-        // Remove VERIFIED_BOT (1<<38), add EARLY_VERIFIED_BOT_DEVELOPER (1<<37)
         const newFlags = (origFlags & ~(1n << 38n)) | (1n << 37n);
-        
-        // Create modified profile data
+
         this._modifiedProfile = {
             ...this.originalUserData,
             publicFlags: Number(newFlags),
             id: this.generateOlderUserId(this.originalUserData.id)
         };
-        
-        // Create modified user data
+
         this._modifiedUser = {
             ...this.originalUserData,
             publicFlags: Number(newFlags),
             id: this._modifiedProfile.id
         };
-        
-        // Store on UserStore for patches to access
-        UserStore.__dcb_profile = this._modifiedProfile;
-        UserStore.__dcb_user = this._modifiedUser;
-        
-        // Force Discord to refresh user data
+
+        // Expose for patches
+        (window as any).dcb_mods = {
+            currentId,
+            profile: this._modifiedProfile,
+            user: this._modifiedUser
+        };
+
         FluxDispatcher.dispatch({
             type: "USER_UPDATE",
             user: this._modifiedUser
         });
+
+        console.log("DoubleCounterBypass: Modifications applied");
     },
-    
+
     restoreOriginalData() {
         if (!this.originalUserData) return;
-        
-        // Clear modified data
+
         this._modifiedProfile = null;
         this._modifiedUser = null;
-        delete UserStore.__dcb_profile;
-        delete UserStore.__dcb_user;
-        
-        // Force Discord to refresh with original data
+        (window as any).dcb_mods = undefined;
+
         FluxDispatcher.dispatch({
             type: "USER_UPDATE",
             user: this.originalUserData
         });
+
+        console.log("DoubleCounterBypass: Original data restored");
     },
-    
-    generateOlderUserId(originalId) {
+
+    generateOlderUserId(originalId: string): string {
         const id = BigInt(originalId);
-        const DISCORD_EPOCH = 1420070400000n;
-        const timestamp = (id >> 22n) + DISCORD_EPOCH;
-        const twoYearsMs = 365n * 24n * 60n * 60n * 1000n * 2n;
-        const olderTimestamp = timestamp - twoYearsMs;
-        const newTimestampBits = (olderTimestamp - DISCORD_EPOCH) << 22n;
-        const workerData = id & ((1n << 22n) - 1n);
-        const newSnowflake = newTimestampBits | workerData;
-        return newSnowflake.toString();
+        const EPOCH = 1420070400000n;
+        const timestamp = (id >> 22n) + EPOCH;
+        const twoYears = 365n * 24n * 60n * 60n * 1000n * 2n;
+        const olderTimestamp = timestamp - twoYears;
+        const newBits = ((olderTimestamp - EPOCH) << 22n) | (id & ((1n << 22n) - 1n));
+        return newBits.toString();
     }
 });
